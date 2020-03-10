@@ -145,6 +145,31 @@ function determineExecutionMethod(theOptions: IOptions, context: Context, progra
   return isNativeRunnable
 }
 
+export function findIdentifier(
+  code: string,
+  context: Context,
+  loc: { line: number; column: number }
+): any {
+  const program = parse(code, context)
+  if (!program) {
+    return null
+  }
+  for (const node of program.body) {
+    const { start, end }: any = node.loc
+    if (start.line === loc.line && start.column <= loc.column && loc.column < end.column) {
+      if (node.type === 'VariableDeclaration') {
+        const { start: declarationStart, end: declarationEnd }: any = node.declarations[0].id.loc
+        return declarationStart.column <= loc.column && loc.column <= declarationEnd.column
+          ? node.declarations[0].id
+          : null
+      } else if (node.type === 'ExpressionStatement') {
+        return node.expression
+      }
+    }
+  }
+  return null
+}
+
 export async function runInContext(
   code: string,
   context: Context,

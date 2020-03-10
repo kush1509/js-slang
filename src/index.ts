@@ -3,19 +3,20 @@ import { DebuggerStatement, Literal, Program } from 'estree'
 import { RawSourceMap, SourceMapConsumer } from 'source-map'
 import { JSSLANG_PROPERTIES, UNKNOWN_LOCATION } from './constants'
 import createContext from './createContext'
-import { evaluate } from './interpreter'
 import {
   ConstAssignment,
   ExceptionError,
   InterruptedError,
-  RuntimeSourceError,
   UndefinedVariable
-} from './interpreter-errors'
-import { parse, parseAt } from './parser'
+} from './errors/errors'
+import { RuntimeSourceError } from './errors/runtimeSourceError'
+import { evaluate } from './interpreter/interpreter'
+import { parse, parseAt } from './parser/parser'
 import { AsyncScheduler, PreemptiveScheduler } from './schedulers'
 import { areBreakpointsSet, setBreakpointAtLine } from './stdlib/inspector'
-import { codify, getEvaluationSteps } from './substituter'
-import { transpile } from './transpiler'
+import { codify, getEvaluationSteps } from './stepper/stepper'
+import { sandboxedEval } from './transpiler/evalContainer'
+import { transpile } from './transpiler/transpiler'
 import {
   Context,
   Error as ResultError,
@@ -26,7 +27,7 @@ import {
   SourceError
 } from './types'
 import { locationDummyNode } from './utils/astCreator'
-import { sandboxedEval } from './utils/evalContainer'
+import { validateAndAnnotate } from './validator/validator'
 
 export interface IOptions {
   scheduler: 'preemptive' | 'async'
@@ -144,6 +145,31 @@ function determineExecutionMethod(theOptions: IOptions, context: Context, progra
   return isNativeRunnable
 }
 
+export function findIdentifier(
+  code: string,
+  context: Context,
+  loc: { line: number; column: number }
+): any {
+  const program = parse(code, context)
+  if (!program) {
+    return null
+  }
+  for (const node of program.body) {
+    const { start, end }: any = node.loc
+    if (start.line === loc.line && start.column <= loc.column && loc.column < end.column) {
+      if (node.type === 'VariableDeclaration') {
+        const { start: declarationStart, end: declarationEnd }: any = node.declarations[0].id.loc
+        return declarationStart.column <= loc.column && loc.column <= declarationEnd.column
+          ? node.declarations[0].id
+          : null
+      } else if (node.type === 'ExpressionStatement') {
+        return node.expression
+      }
+    }
+  }
+  return null
+}
+
 export async function runInContext(
   code: string,
   context: Context,
@@ -164,6 +190,10 @@ export async function runInContext(
   verboseErrors = getFirstLine(code) === 'enable verbose'
   const program = parse(code, context)
   if (!program) {
+    return resolvedErrorPromise
+  }
+  validateAndAnnotate(program as Program, context)
+  if (context.errors.length > 0) {
     return resolvedErrorPromise
   }
   if (options.useSubst) {
